@@ -24,7 +24,8 @@ ui <- fluidPage(
       downloadButton("download_pvals", "Download P-values"),
       downloadButton("download_r2", "Download R² Table"),
       downloadButton("download_pstars", "Download P-values with Stars"),
-      downloadButton("download_grid", "Download Grid of Variable Importance Plots")  # New download button
+      downloadButton("download_grid", "Download Grid of Variable Importance Plots"),
+      downloadButton("download_coefs", "Download Variable Importance Coefficients")  # New download button for coefficients
     ),
     
     mainPanel(
@@ -38,6 +39,11 @@ ui <- fluidPage(
   )
 )
 
+
+
+
+
+###########################################################
 server <- function(input, output, session) {
   
   data <- reactiveValues()
@@ -198,6 +204,23 @@ server <- function(input, output, session) {
       write.csv(data$p_values_with_stars_df, file)
     }
   )
+  
+  # New download handler for variable importance coefficients
+  output$download_coefs <- downloadHandler(
+    filename = function() {
+      "variable_importance_coefficients.csv"
+    },
+    content = function(file) {
+      # Extract the coefficients from each model and save them as a data frame
+      coef_data <- lapply(seq_along(data$lm_models), function(i) {
+        coefs <- coef(data$lm_models[[i]])
+        data.frame(Variable = names(coefs)[-1], Coefficient = coefs[-1], Response = names(data$RESPONSE)[i])
+      })
+      coef_df <- do.call(rbind, coef_data)
+      write.csv(coef_df, file, row.names = FALSE)
+    }
+  )
 }
 
 shinyApp(ui = ui, server = server)
+
