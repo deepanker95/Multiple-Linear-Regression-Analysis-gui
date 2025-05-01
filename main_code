@@ -1,0 +1,203 @@
+# Install necessary packages if not already installed
+if(!require(shiny)) install.packages("shiny")
+if(!require(readxl)) install.packages("readxl")
+if(!require(corrplot)) install.packages("corrplot")
+if(!require(ggplot2)) install.packages("ggplot2")
+if(!require(gridExtra)) install.packages("gridExtra")
+
+# Load required libraries
+library(shiny)
+library(readxl)
+library(corrplot)
+library(ggplot2)
+library(gridExtra)
+#############################################################################################################
+ui <- fluidPage(
+  titlePanel("Multiple Linear Regression Analysis Tool"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      fileInput("explain", "Upload EXPLAIN.xlsx"),
+      fileInput("response", "Upload RESPONSE.xlsx"),
+      actionButton("run", "Run Analysis"),
+      br(), br(),
+      downloadButton("download_pvals", "Download P-values"),
+      downloadButton("download_r2", "Download R² Table"),
+      downloadButton("download_pstars", "Download P-values with Stars"),
+      downloadButton("download_grid", "Download Grid of Variable Importance Plots")  # New download button
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("Correlation Plot", plotOutput("corPlot")),
+        tabPanel("Regression Summaries", verbatimTextOutput("regSummary")),
+        tabPanel("Residual Histograms", uiOutput("residualHistUI")),
+        tabPanel("Variable Importance", uiOutput("coefPlotUI"))
+      )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  
+  data <- reactiveValues()
+  
+  observeEvent(input$run, {
+    req(input$explain, input$response)
+    
+    EXPLAIN <- read_excel(input$explain$datapath)
+    RESPONSE <- read_excel(input$response$datapath)
+    EXPLAIN <- as.data.frame(EXPLAIN)
+    RESPONSE <- as.data.frame(RESPONSE)
+    
+    if (nrow(EXPLAIN) != nrow(RESPONSE)) {
+      showNotification("Number of rows must match!", type = "error")
+      return()
+    }
+    
+    data$EXPLAIN <- EXPLAIN
+    data$RESPONSE <- RESPONSE
+    
+    data$cor_matrix <- cor(EXPLAIN, use = "pairwise.complete.obs")
+    
+    data$lm_models <- lapply(names(RESPONSE), function(resp_var) {
+      lm(RESPONSE[[resp_var]] ~ ., data = EXPLAIN)
+    })
+    
+    data$summaries <- lapply(data$lm_models, summary)
+    
+    p_values <- lapply(data$summaries, function(x) x$coefficients[, "Pr(>|t|)"])
+    data$p_values_df <- do.call(cbind, p_values)
+    colnames(data$p_values_df) <- names(RESPONSE)
+    
+    data$r_squared_values <- data.frame(
+      Response = names(RESPONSE),
+      Adjusted_R_squared = sapply(data$summaries, function(x) x$adj.r.squared),
+      R_squared = sapply(data$summaries, function(x) x$r.squared)
+    )
+    
+    p_values_with_stars <- lapply(data$summaries, function(x) {
+      p_vals <- x$coefficients[, "Pr(>|t|)"]
+      stars <- cut(p_vals, breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf),
+                   labels = c("***", "**", "*", ".", ""))
+      data.frame(P_Value = p_vals, Significance = stars)
+    })
+    data$p_values_with_stars_df <- do.call(cbind, p_values_with_stars)
+    
+    showNotification("Analysis completed!", type = "message")
+  })
+  
+  output$corPlot <- renderPlot({
+    req(data$cor_matrix)
+    corrplot.mixed(data$cor_matrix, tl.cex = 0.65, tl.srt = 65, tl.col = "red")
+  })
+  
+  output$regSummary <- renderPrint({
+    req(data$summaries)
+    for (i in seq_along(data$summaries)) {
+      cat("Summary for", names(data$RESPONSE)[i], "\n")
+      print(data$summaries[[i]])
+      cat("\n------------------------\n\n")
+    }
+  })
+  
+  # Residual Histograms (for all response variables)
+  output$residualHistUI <- renderUI({
+    req(data$lm_models)
+    plots <- lapply(seq_along(data$lm_models), function(i) {
+      plotname <- paste0("res_plot_", i)
+      plotOutput(plotname, height = "300px")
+    })
+    do.call(tagList, plots)
+  })
+  
+  observe({
+    req(data$lm_models)
+    for (i in seq_along(data$lm_models)) {
+      local({
+        idx <- i
+        output[[paste0("res_plot_", idx)]] <- renderPlot({
+          hist(data$lm_models[[idx]]$residuals,
+               main = paste("Residuals for", names(data$RESPONSE)[idx]),
+               xlab = "Residuals", col = "skyblue", border = "white")
+        })
+      })
+    }
+  })
+  
+  # Coefficient Barplots (for all response variables)
+  output$coefPlotUI <- renderUI({
+    req(data$lm_models)
+    plots <- lapply(seq_along(data$lm_models), function(i) {
+      plotname <- paste0("coef_plot_", i)
+      plotOutput(plotname, height = "300px")
+    })
+    do.call(tagList, plots)
+  })
+  
+  observe({
+    req(data$lm_models)
+    for (i in seq_along(data$lm_models)) {
+      local({
+        idx <- i
+        output[[paste0("coef_plot_", idx)]] <- renderPlot({
+          coefs <- coef(data$lm_models[[idx]])
+          barplot(coefs[-1],
+                  names.arg = names(coefs)[-1],
+                  ylab = "Coefficient",
+                  main = paste("Variable Importance for", names(data$RESPONSE)[idx]),
+                  col = "blue", border = "white", las = 2, cex.main = 1.5, cex.lab = 1.2, font.main = 2, font.lab = 2)
+        })
+      })
+    }
+  })
+  
+  # Download the grid of plots as a PNG
+  output$download_grid <- downloadHandler(
+    filename = function() {"variable_importance_grid.png"},
+    content = function(file) {
+      # Save the grid of plots as a single PNG file
+      png(file, width = 1200, height = 800)
+      gridExtra::grid.arrange(grobs = lapply(seq_along(data$lm_models), function(i) {
+        coefs <- coef(data$lm_models[[i]])
+        plot <- ggplot(data.frame(Variable = names(coefs)[-1], Coefficient = coefs[-1]), 
+                       aes(x = Variable, y = Coefficient)) + 
+          geom_bar(stat = "identity", fill = "blue") +
+          theme_minimal() +
+          labs(title = paste("Variable Importance for", names(data$RESPONSE)[i]),
+               x = "Variable", y = "Coefficient") +
+          theme(
+            plot.title = element_text(face = "bold", size = 16),
+            axis.title = element_text(face = "bold", size = 14),   # Make axis titles bold
+            axis.text = element_text(face = "bold", size = 12)      # Make axis ticks bold
+          )
+        plot
+      }), ncol = 4)
+      dev.off()
+    }
+  )
+  
+  # Download the results (CSV files)
+  output$download_pvals <- downloadHandler(
+    filename = function() {"p_values_table.csv"},
+    content = function(file) {
+      write.csv(data$p_values_df, file)
+    }
+  )
+  
+  output$download_r2 <- downloadHandler(
+    filename = function() {"r_squared_values_table.csv"},
+    content = function(file) {
+      write.csv(data$r_squared_values, file, row.names = FALSE)
+    }
+  )
+  
+  output$download_pstars <- downloadHandler(
+    filename = function() {"p_values_with_stars_table.csv"},
+    content = function(file) {
+      write.csv(data$p_values_with_stars_df, file)
+    }
+  )
+}
+
+shinyApp(ui = ui, server = server)
