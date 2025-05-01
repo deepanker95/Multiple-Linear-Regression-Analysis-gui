@@ -82,4 +82,4 @@ The Multiple Linear Regression Analysis Tool is designed to empower non-programm
 **Developed by**: Deepanker Das, SRF (ICMR)  
 **License**: MIT License
 
-For any issues or inquiries, please contact: [Your Contact Information]
+For any issues or inquiries, please contact: [deepankernireh@gmail.com]
